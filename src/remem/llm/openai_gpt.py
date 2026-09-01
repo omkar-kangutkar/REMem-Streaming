@@ -23,6 +23,11 @@ logger = get_logger(__name__)
 def cache_response(func):
     @functools.wraps(func)
     def wrapper(self, *args, **kwargs) -> tuple[str, Dict, bool]:
+        # Allow callers to force a fresh API response while keeping the
+        # normal cache key. A successful fresh result will overwrite the
+        # previously cached response.
+        bypass_cache = kwargs.pop("bypass_cache", False)
+
         # get messages from args or kwargs
         if args:
             messages = args[0]
@@ -52,34 +57,40 @@ def cache_response(func):
         # the file name of lock, ensure mutual exclusion when accessing concurrently
         lock_file = self.cache_file_name + ".lock"
 
-        # Try to read from SQLite cache with timeout
+        # Try to read from SQLite cache unless explicitly bypassed.
         try:
-            with FileLock(lock_file, timeout=30):  # 30 second timeout
-                conn = sqlite3.connect(self.cache_file_name)
-                c = conn.cursor()
-                # if the table does not exist, create it
-                c.execute(
+            if bypass_cache:
+                row = None
+            else:
+                with FileLock(lock_file, timeout=30):
+                    conn = sqlite3.connect(self.cache_file_name)
+                    c = conn.cursor()
+                    c.execute(
+                        """
+                        CREATE TABLE IF NOT EXISTS cache (
+                            key TEXT PRIMARY KEY,
+                            message TEXT,
+                            metadata TEXT
+                        )
                     """
-                    CREATE TABLE IF NOT EXISTS cache (
-                        key TEXT PRIMARY KEY,
-                        message TEXT,
-                        metadata TEXT
                     )
-                """
-                )
-                conn.commit()  # commit to save the table creation
-                c.execute("SELECT message, metadata FROM cache WHERE key = ?", (key_hash,))
-                row = c.fetchone()
-                conn.close()
-                if row is not None:  # cache hit
-                    message, metadata_str = row
-                    metadata = json.loads(metadata_str)
-                    # return cached result and mark as hit
-                    return message, metadata, True
+                    conn.commit()
+                    c.execute(
+                        "SELECT message, metadata FROM cache WHERE key = ?",
+                        (key_hash,),
+                    )
+                    row = c.fetchone()
+                    conn.close()
+
+            if row is not None:
+                message, metadata_str = row
+                metadata = json.loads(metadata_str)
+                return message, metadata, True
+
         except Exception as e:
             logger.warning(f"Cache read failed: {e}. Proceeding without cache.")
 
-        # if cache miss, call the original function to get the result
+        # Cache miss or bypass: make a fresh API request.
         try:
             result = func(self, *args, **kwargs)
             response, metadata = result
@@ -186,7 +197,7 @@ class CacheOpenAI(BaseLLM):
             assert os.getenv("AZURE_OPENAI_ENDPOINT"), "AZURE_OPENAI_ENDPOINT must be set"
             self.openai_client = AzureOpenAI(timeout=60, max_retries=5)
         else:
-            # Use standard OpenAI API
+            # Use standard OpenAI-compatible API (including OpenRouter when llm_base_url points there)
             if api_key is None:
                 api_key = os.getenv("OPENAI_API_KEY")
             assert api_key is not None, "OPENAI_API_KEY must be set or provided as api_key parameter"
@@ -226,6 +237,7 @@ class CacheOpenAI(BaseLLM):
             response_message = response.choices[0].message.content
         except Exception as e:
             logger.error(f"LLM API call failed: {e}")
+            raise
 
         metadata = {
             "prompt": messages,
