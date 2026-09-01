@@ -197,7 +197,7 @@ class CacheOpenAI(BaseLLM):
             assert os.getenv("AZURE_OPENAI_ENDPOINT"), "AZURE_OPENAI_ENDPOINT must be set"
             self.openai_client = AzureOpenAI(timeout=60, max_retries=5)
         else:
-            # Use standard OpenAI-compatible API (including OpenRouter when llm_base_url points there)
+            # Use standard OpenAI API
             if api_key is None:
                 api_key = os.getenv("OPENAI_API_KEY")
             assert api_key is not None, "OPENAI_API_KEY must be set or provided as api_key parameter"
@@ -237,7 +237,6 @@ class CacheOpenAI(BaseLLM):
             response_message = response.choices[0].message.content
         except Exception as e:
             logger.error(f"LLM API call failed: {e}")
-            raise
 
         metadata = {
             "prompt": messages,
