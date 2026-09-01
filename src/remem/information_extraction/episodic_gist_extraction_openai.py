@@ -104,41 +104,99 @@ class EpisodicGistExtraction:
         response_format = None
         if json_mode:
             response_format = {"type": "json_object"}
-        try:
-            # LLM INFERENCE
-            raw_response, metadata, cache_hit = self.llm_model.infer(
-                messages=extraction_input_message,
-                response_format=response_format,
-                seed=self.global_config.seed,
-                temperature=self.global_config.temperature,
-            )
-            metadata["cache_hit"] = cache_hit
-            if metadata["finish_reason"] == "length":
-                from remem.utils.llm_utils import fix_broken_generated_json
+        last_error = None
 
-                real_response = fix_broken_generated_json(raw_response)
-            else:
-                real_response = raw_response.replace("null", '""')
+        # First attempt may use cache. If JSON parsing fails, force fresh
+        # responses so malformed cached generations are replaced.
+        for attempt in range(3):
+            try:
+                # Keep the normal deterministic settings on the first
+                # attempt. If malformed JSON is returned, vary seed and
+                # temperature on retries so the model does not reproduce
+                # exactly the same invalid output.
+                base_seed = (
+                    self.global_config.seed
+                    if self.global_config.seed is not None
+                    else 0
+                )
 
-            generated_json_obj = json.loads(real_response)
-            return {
-                "chunk_id": chunk_key,
-                "response": raw_response,
-                "metadata": metadata,
-                "verbatim": verbatim,
-                target: generated_json_obj.get(target, []),
-            }
-        except Exception as e:
-            # For any other unexpected exceptions, log them and return with the error message
-            logger.warning(f"Extraction exception {e}")
-            metadata.update({"Extraction Error": str(e)})
-            return {
-                "chunk_id": chunk_key,
-                "response": raw_response,
-                "metadata": metadata,
-                "verbatim": verbatim,
-                target: None,
-            }
+                if attempt == 0:
+                    retry_seed = self.global_config.seed
+                    retry_temperature = self.global_config.temperature
+                else:
+                    retry_seed = base_seed + attempt
+                    retry_temperature = 0.2 * attempt
+
+                raw_response, metadata, cache_hit = self.llm_model.infer(
+                    messages=extraction_input_message,
+                    response_format=response_format,
+                    seed=retry_seed,
+                    temperature=retry_temperature,
+                    bypass_cache=(attempt > 0),
+                )
+
+                metadata["cache_hit"] = cache_hit
+
+                if metadata.get("finish_reason") == "length":
+                    from remem.utils.llm_utils import fix_broken_generated_json
+                    real_response = fix_broken_generated_json(raw_response)
+                else:
+                    real_response = raw_response.replace("null", '""')
+
+                generated_json_obj = json.loads(real_response)
+
+                extracted = generated_json_obj.get(target, [])
+                if extracted is None:
+                    raise ValueError(
+                        f"Parsed JSON contains null {target}"
+                    )
+
+                if attempt > 0:
+                    logger.info(
+                        "Extraction retry succeeded for %s (%s) "
+                        "on attempt %d",
+                        chunk_key,
+                        target,
+                        attempt + 1,
+                    )
+
+                return {
+                    "chunk_id": chunk_key,
+                    "response": raw_response,
+                    "metadata": metadata,
+                    "verbatim": verbatim,
+                    target: extracted,
+                }
+
+            except Exception as e:
+                last_error = e
+
+                if attempt < 2:
+                    logger.warning(
+                        "Extraction parse failure for %s (%s), "
+                        "retrying with fresh response: %s",
+                        chunk_key,
+                        target,
+                        e,
+                    )
+                    continue
+
+                logger.warning(
+                    "Extraction exception after 3 attempts for %s (%s): %s",
+                    chunk_key,
+                    target,
+                    e,
+                )
+
+        metadata.update({"Extraction Error": str(last_error)})
+
+        return {
+            "chunk_id": chunk_key,
+            "response": raw_response,
+            "metadata": metadata,
+            "verbatim": verbatim,
+            target: None,
+        }
 
     def batch_extraction(
         self, chunk_passages, template: str, target: str, max_workers: int = 10, gist_map: Dict[str, list] = None
