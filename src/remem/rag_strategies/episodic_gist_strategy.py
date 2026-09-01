@@ -49,24 +49,44 @@ class EpisodicGistStrategy(RAGStrategy):
             self.remem.global_config.force_index_from_scratch or self.remem.global_config.force_openie_from_scratch
         )
 
-        # If not forcing rebuild, check if all necessary components exist
-        if not force_rebuild:
-            existing_graph_exists = hasattr(self.remem, "_graph_pickle_path") and os.path.exists(
-                self.remem._graph_pickle_path
-            )
-            existing_embeddings_exist = len(self.remem.chunk_embedding_store.embeddings) > 0
-            existing_openie_exists = os.path.exists(self.remem.openie_results_path)
+        # STREAMING FIX:
+        # Register incoming documents before deciding whether there is
+        # anything new to index. The original implementation checked only
+        # whether an index already existed, which caused every streaming
+        # update after the first session to be skipped.
+        existing_chunk_keys = set(
+            self.remem.chunk_embedding_store.hash_id_to_row.keys()
+        )
 
-            if existing_graph_exists and existing_embeddings_exist and existing_openie_exists:
-                logger.info("Found existing graph, embeddings, and OpenIE results. Skipping indexing.")
-                # Still need to prepare retrieval objects
+        self.remem.add_chunk_and_embeddings(docs)
+        chunk_dict = self.remem.chunk_embedding_store.hash_id_to_row
+
+        current_chunk_keys = set(chunk_dict.keys())
+        new_chunk_keys = current_chunk_keys - existing_chunk_keys
+
+        if not force_rebuild and not new_chunk_keys:
+            existing_graph_exists = (
+                hasattr(self.remem, "_graph_pickle_path")
+                and os.path.exists(self.remem._graph_pickle_path)
+            )
+            existing_openie_exists = os.path.exists(
+                self.remem.openie_results_path
+            )
+
+            if existing_graph_exists and existing_openie_exists:
+                logger.info(
+                    "No new chunks detected. Existing index is up to date; "
+                    "skipping indexing."
+                )
                 if not self.remem.ready_to_retrieve:
                     self.prepare_retrieval_objects()
                 return
 
-        # Continue with indexing process
-        self.remem.add_chunk_and_embeddings(docs)
-        chunk_dict = self.remem.chunk_embedding_store.hash_id_to_row
+        if new_chunk_keys:
+            logger.info(
+                "Streaming update detected %d new chunk(s).",
+                len(new_chunk_keys),
+            )
 
         all_openie_info, chunk_keys_to_process = self.remem.load_existing_openie(chunk_dict.keys())
         new_openie_rows = {k: chunk_dict[k] for k in chunk_keys_to_process}

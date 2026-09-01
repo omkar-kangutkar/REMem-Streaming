@@ -428,27 +428,48 @@ class ReMem:
 
     def add_chunk_and_embeddings(self, docs):
         """
-        Chunk documents and store their embeddings.
-        Args:
-            docs:
+        Chunk documents and incrementally store their embeddings.
 
-        Returns:
-
+        In streaming mode this method may be called repeatedly as new
+        sessions arrive. Existing chunks are deduplicated by EmbeddingStore;
+        unseen chunks are inserted without discarding previous chunks.
         """
 
-        if self.chunk_contents is None:
-            self.preprocessed_chunks: List[List[Dict[str, Any]]] = self.text_preprocessor.batch_preprocess_doc(
-                input=docs
-            )
-            chunk_metadata = [chunk for chunks in self.preprocessed_chunks for chunk in chunks]
-            if len(self.chunk_embedding_store.embeddings) == 0:
-                nodes_dict = self.chunk_embedding_store.insert_chunk_dicts(chunk_metadata, "openie")
-                self.chunk_contents = [chunk["content"] for chunk in nodes_dict.values()]
-                self.chunk_metadata = [chunk["metadata"] for chunk in nodes_dict.values()]
-            else:
-                self.chunk_contents = list(self.chunk_embedding_store.hash_id_to_text.values())
-                chunk_metadata = list(self.chunk_embedding_store.hash_id_to_row.values())
-                self.chunk_metadata = [chunk["metadata"] for chunk in chunk_metadata]
+        # Always preprocess the documents supplied on this call.
+        # The previous implementation only did this when chunk_contents was
+        # None, which meant every streaming update after the first one was
+        # silently ignored.
+        self.preprocessed_chunks: List[List[Dict[str, Any]]] = (
+            self.text_preprocessor.batch_preprocess_doc(input=docs)
+        )
+
+        chunk_metadata = [
+            chunk
+            for chunks in self.preprocessed_chunks
+            for chunk in chunks
+        ]
+
+        # EmbeddingStore handles duplicate IDs, so passing accumulated
+        # sessions is safe: existing chunks remain and only unseen chunks
+        # are inserted.
+        self.chunk_embedding_store.insert_chunk_dicts(
+            chunk_metadata,
+            "openie",
+        )
+
+        # Refresh the in-memory views from the complete persistent store.
+        self.chunk_contents = list(
+            self.chunk_embedding_store.hash_id_to_text.values()
+        )
+
+        all_chunk_rows = list(
+            self.chunk_embedding_store.hash_id_to_row.values()
+        )
+
+        self.chunk_metadata = [
+            chunk.get("metadata")
+            for chunk in all_chunk_rows
+        ]
 
     def retrieve(
         self, queries: List[str], num_to_retrieve: Optional[int] = None
