@@ -34,7 +34,13 @@ The system is **not claimed to be fully incremental at every stage**. Session in
 - Conversation preprocessing: `by_session`
 - Main datasets: LoCoMo and REALTALK
 
-API credentials must be supplied through environment variables/local configuration and must never be committed to the repository.
+The final OpenRouter configuration uses the OpenAI-compatible client with `llm_base_url="https://openrouter.ai/api/v1"`. In the submitted code the credential is read from the `OPENAI_API_KEY` environment variable, so an OpenRouter key can be supplied without placing the secret in source code:
+
+```bash
+export OPENAI_API_KEY="your_openrouter_key_here"
+```
+
+Do not commit a real API key, `.env` file, token, or other credential.
 
 ## Final dissertation results
 
@@ -100,7 +106,7 @@ results/paired_streaming_vs_reindex_FINAL.csv
 results/paired_latency_summary_FINAL.csv
 ```
 
-**Important:** the repository should only be treated as fully submission-synchronised after every file above is present in the exact version used for the final dissertation. See `FINAL_SUBMISSION_CHECKLIST.md` for the current sync status.
+See `FINAL_SUBMISSION_CHECKLIST.md` for exact synchronization status.
 
 ## Reproduction logic
 
@@ -143,7 +149,7 @@ src/remem/          REMem source plus project modifications
 examples/           dataset-specific REMem scripts
 reproduce/dataset/  benchmark datasets used by the repository
 experiments/         experimental utilities
-results/             lightweight final result files (once synced)
+results/             lightweight final result files
 streaming_indexer.py streaming control layer
 ```
 
